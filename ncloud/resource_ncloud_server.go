@@ -2,11 +2,11 @@ package ncloud
 
 import (
 	"fmt"
-	"github.com/NaverCloudPlatform/ncloud-sdk-go-v2/services/vserver"
 	"log"
 	"regexp"
-	"strconv"
 	"time"
+
+	"github.com/NaverCloudPlatform/ncloud-sdk-go-v2/services/vserver"
 
 	"github.com/NaverCloudPlatform/ncloud-sdk-go-v2/ncloud"
 	"github.com/NaverCloudPlatform/ncloud-sdk-go-v2/services/server"
@@ -285,7 +285,7 @@ func resourceNcloudServerRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	if config.SupportVPC {
-		buildNetworkInterfaceList(config, r)
+		buildNetworkInterfaceList(d, config, r)
 	}
 
 	instance := ConvertToMap(r)
@@ -875,29 +875,48 @@ func convertVcpServerInstance(r *vserver.ServerInstance) *ServerInstance {
 	return instance
 }
 
-func buildNetworkInterfaceList(config *ProviderConfig, r *ServerInstance) error {
-	for _, ni := range r.NetworkInterfaceList {
-		networkInterface, err := getNetworkInterface(config, *ni.NetworkInterfaceNo)
+func buildNetworkInterfaceList(d *schema.ResourceData, config *ProviderConfig, r *ServerInstance) error {
+	var configuredOrders []int
+	if v, ok := d.GetOk("network_interface"); ok {
+		vL := v.([]interface{})
+		for _, vi := range vL {
+			mVi := vi.(map[string]interface{})
+			configuredOrders = append(configuredOrders, mVi["order"].(int))
+		}
+	}
 
-		if err != nil {
-			return err
+	if len(r.NetworkInterfaceList) > 0 {
+		var networkInterfaces []*ServerInstanceNetworkInterface
+		for _, iNi := range r.NetworkInterfaceList {
+			networkInterface, err := getNetworkInterface(config, *iNi.NetworkInterfaceNo)
+			if err != nil {
+				return err
+			}
+
+			if networkInterface == nil {
+				continue
+			}
+
+			order, err := ParseNetworkInterfaceOrder(networkInterface)
+			if err != nil {
+				return err
+			}
+
+			for _, o := range configuredOrders {
+				if o == order {
+					ni := &ServerInstanceNetworkInterface{
+						Order:              ncloud.Int32(int32(order)),
+						NetworkInterfaceNo: networkInterface.NetworkInterfaceNo,
+						PrivateIp:          networkInterface.Ip,
+						SubnetNo:           networkInterface.SubnetNo,
+					}
+					networkInterfaces = append(networkInterfaces, ni)
+				}
+			}
+
 		}
 
-		if networkInterface == nil {
-			continue
-		}
-
-		re := regexp.MustCompile("[0-9]+")
-		order, err := strconv.Atoi(re.FindString(*networkInterface.DeviceName))
-
-		if err != nil {
-			return fmt.Errorf("error parsing network interface device name: %s", *networkInterface.DeviceName)
-		}
-
-		ni.PrivateIp = networkInterface.Ip
-		ni.SubnetNo = networkInterface.SubnetNo
-		ni.NetworkInterfaceNo = networkInterface.NetworkInterfaceNo
-		ni.Order = ncloud.Int32(int32(order))
+		r.NetworkInterfaceList = networkInterfaces
 	}
 
 	return nil

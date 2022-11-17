@@ -2,9 +2,12 @@ package ncloud
 
 import (
 	"fmt"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"log"
+	"regexp"
+	"strconv"
 	"time"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 
 	"github.com/NaverCloudPlatform/ncloud-sdk-go-v2/ncloud"
 	"github.com/NaverCloudPlatform/ncloud-sdk-go-v2/services/vserver"
@@ -365,7 +368,12 @@ func attachNetworkInterface(d *schema.ResourceData, config *ProviderConfig) erro
 	var err error
 
 	if config.SupportVPC {
-		err = attachVpcNetworkInterface(d, config)
+		err = attachVpcNetworkInterface(
+			config,
+			d.Id(),
+			d.Get("subnet_no").(string),
+			d.Get("server_instance_no").(string),
+		)
 	} else {
 		err = NotSupportClassic("resource `ncloud_network_interface`")
 	}
@@ -381,24 +389,24 @@ func attachNetworkInterface(d *schema.ResourceData, config *ProviderConfig) erro
 	return nil
 }
 
-func attachVpcNetworkInterface(d *schema.ResourceData, config *ProviderConfig) error {
+func attachVpcNetworkInterface(config *ProviderConfig, networkInterfaceNo, subnetNo, serverInstanceNo string) error {
 	reqParams := &vserver.AttachNetworkInterfaceRequest{
 		RegionCode:         &config.RegionCode,
-		NetworkInterfaceNo: ncloud.String(d.Id()),
-		SubnetNo:           ncloud.String(d.Get("subnet_no").(string)),
-		ServerInstanceNo:   ncloud.String(d.Get("server_instance_no").(string)),
+		NetworkInterfaceNo: ncloud.String(networkInterfaceNo),
+		SubnetNo:           ncloud.String(subnetNo),
+		ServerInstanceNo:   ncloud.String(serverInstanceNo),
 	}
 
 	logCommonRequest("attachVpcNetworkInterface", reqParams)
 
 	resp, err := config.Client.vserver.V2Api.AttachNetworkInterface(reqParams)
 	if err != nil {
-		logErrorResponse("attachVpcNetworkInterface", err, d.Id())
+		logErrorResponse("attachVpcNetworkInterface", err, networkInterfaceNo)
 		return err
 	}
 	logCommonResponse("attachVpcNetworkInterface", GetCommonResponse(resp))
 
-	if err := waitForNetworkInterfaceAttachment(config, d.Id()); err != nil {
+	if err := waitForNetworkInterfaceAttachment(config, networkInterfaceNo); err != nil {
 		return err
 	}
 
@@ -409,7 +417,12 @@ func detachNetworkInterface(d *schema.ResourceData, config *ProviderConfig, serv
 	var err error
 
 	if config.SupportVPC {
-		err = detachVpcNetworkInterface(d, config, serverInstanceNo)
+		err = detachVpcNetworkInterface(
+			config,
+			d.Id(),
+			d.Get("subnet_no").(string),
+			serverInstanceNo,
+		)
 	} else {
 		err = NotSupportClassic("resource `ncloud_network_interface`")
 	}
@@ -421,11 +434,11 @@ func detachNetworkInterface(d *schema.ResourceData, config *ProviderConfig, serv
 	return nil
 }
 
-func detachVpcNetworkInterface(d *schema.ResourceData, config *ProviderConfig, serverInstanceNo string) error {
+func detachVpcNetworkInterface(config *ProviderConfig, networkInterfaceNo, subnetNo, serverInstanceNo string) error {
 	reqParams := &vserver.DetachNetworkInterfaceRequest{
 		RegionCode:         &config.RegionCode,
-		NetworkInterfaceNo: ncloud.String(d.Id()),
-		SubnetNo:           ncloud.String(d.Get("subnet_no").(string)),
+		NetworkInterfaceNo: ncloud.String(networkInterfaceNo),
+		SubnetNo:           ncloud.String(subnetNo),
 		ServerInstanceNo:   ncloud.String(serverInstanceNo),
 	}
 
@@ -433,12 +446,12 @@ func detachVpcNetworkInterface(d *schema.ResourceData, config *ProviderConfig, s
 
 	resp, err := config.Client.vserver.V2Api.DetachNetworkInterface(reqParams)
 	if err != nil {
-		logErrorResponse("detachVpcNetworkInterface", err, d.Id())
+		logErrorResponse("detachVpcNetworkInterface", err, networkInterfaceNo)
 		return err
 	}
 	logCommonResponse("detachVpcNetworkInterface", GetCommonResponse(resp))
 
-	if err := waitForVpcNetworkInterfaceState(config, d.Id(), []string{NetworkInterfaceStateUnSet}, []string{NetworkInterfaceStateNotUsed}); err != nil {
+	if err := waitForVpcNetworkInterfaceState(config, networkInterfaceNo, []string{NetworkInterfaceStateUnSet}, []string{NetworkInterfaceStateNotUsed}); err != nil {
 		return err
 	}
 
@@ -480,4 +493,15 @@ func waitForVpcNetworkInterfaceState(config *ProviderConfig, id string, pending 
 	}
 
 	return nil
+}
+
+func ParseNetworkInterfaceOrder(networkInterface *vserver.NetworkInterface) (int, error) {
+	re := regexp.MustCompile("[0-9]+")
+	order, err := strconv.Atoi(re.FindString(*networkInterface.DeviceName))
+
+	if err != nil {
+		return 0, fmt.Errorf("error parsing network interface order: %s", *networkInterface.DeviceName)
+	}
+
+	return order, nil
 }
